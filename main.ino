@@ -44,10 +44,9 @@ static void SetupOGN(int Channel=0, float TxPower=10)         // Radio setup for
 static OGN_TxPacket<OGN1_Packet> TxPacket;                           // encoded OGN packet, to be transmitted
 static uint8_t ManchPacket[2*OGN_TxPacket<OGN1_Packet>::Bytes];      // Manchester encoded OGN Packet, ready to be written to the RF chip
 static uint8_t RxBuffer[2*OGN_TxPacket<OGN1_Packet>::Bytes];         // received raw OGN packet (still Manchester encoded)
-static RFM_FSK_RxPktData RxPktData;                                  // 
-static LDPC_Decoder      Decoder;                                    // decoder and error corrector for the OGN Gallager/LDPC code
-
-
+static RFM_FSK_RxPktData         RxPktData;                          // received Manchester decoded data and error bits
+static LDPC_Decoder              Decoder;                            // decoder and error corrector for the OGN Gallager/LDPC code
+static OGN_RxPacket<OGN1_Packet> RxPacket;                           // received, decoded and corrected packet
 
 static void EncodePacket(OGN_TxPacket<OGN1_Packet> &TxPacket)
 {
@@ -105,15 +104,29 @@ void setup()
 }
 
 static int ReceiveLoop(int ListenTime)
-{ Radio.startReceive(2*OGN_TxPacket<OGN1_Packet>::Bytes);
+{ int state=Radio.startReceive(2*OGN_TxPacket<OGN1_Packet>::Bytes);
+  // printf("Radio.startReceive(%d) => %d\n", 2*OGN_TxPacket<OGN1_Packet>::Bytes, state);
+  // Radio.clearIrqStatus(); // protected call
   int Count=0;
   uint32_t Start = millis();
   for( ; ; )
   { uint32_t Time = millis()-Start;
     if(Time>=ListenTime) break;
     if(digitalRead(LORA_IRQ))                      // if IRQ is high => new packet received
-    { Radio.receive(RxBuffer, 2*OGN_TxPacket<OGN1_Packet>::Bytes);
-      Serial.println("RX");
+    // if(Radio.getIrqStatus())                       // this actually reads all 16 IRQ flags
+    { float RSSI = Radio.getRSSI(true);                 // 
+      Radio.readData(RxBuffer, 2*OGN_TxPacket<OGN1_Packet>::Bytes);
+      uint8_t PktIdx=0;
+      for(uint8_t Idx=0; Idx<OGN_TxPacket<OGN1_Packet>::Bytes; Idx++)                                     // loop over packet bytes
+      { uint8_t ByteH = RxBuffer[PktIdx++];
+        ByteH = ManchesterDecode[ByteH]; uint8_t ErrH=ByteH>>4; ByteH&=0x0F; // decode manchester, detect (some) errors
+        uint8_t ByteL = RxBuffer[PktIdx++];
+        ByteL = ManchesterDecode[ByteL]; uint8_t ErrL=ByteL>>4; ByteL&=0x0F;
+        RxPktData.Data[Idx]=(ByteH<<4) | ByteL;
+        RxPktData.Err [Idx]=(ErrH <<4) | ErrL ; }
+      uint8_t DecErr = RxPktData.Decode(RxPacket, Decoder);                 // run through LDPC FEC decoder
+      printf("RX: %3.1fdBm LDPC:%d errors:%d\n", RSSI, DecErr, RxPacket.RxErr);
+      // Radio.clearIrqStatus();
       Count++; }
     delay(1); }
   Radio.standby();
