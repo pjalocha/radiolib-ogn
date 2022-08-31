@@ -4,6 +4,9 @@
 
 #include <RadioLib.h>                              // Radio Library to control RF chip
 
+#include "nvs.h"
+#include "nvs_flash.h"
+
 #include "ogn.h"                                   // OGN packet format
 #include "ldpc.h"                                  // Low Density Parity Code encoder and decoder
 #include "manchester.h"                            // Manchester encoding/ecoding table
@@ -37,8 +40,10 @@ static void SetupOGN(int Channel=0, float TxPower=10)         // Radio setup for
   Radio.setPreambleLength(8);                                 // [bits] minimal preamble
   Radio.setCRC(0, 0);                                         // disable CRC: we do it ourselves
   Radio.fixedPacketLengthMode(2*OGN_TxPacket<OGN1_Packet>::Bytes); // [bytes] Fixed packet size mode
-  
-  Radio.disableAddressFiltering();
+#ifdef HAS_SX1276
+  Radio.setRSSIConfig(7, 0);                                  // set RSSI smoothing (3 bits) and offset (5 bits)
+#endif
+  Radio.disableAddressFiltering();                            // don't want any of such features
   Radio.setSyncWord((uint8_t *)OGN1_SYNC, 8); }               // SYNC sequence: 8 bytes which is equivalent to 4 bytes
 
 static OGN_TxPacket<OGN1_Packet> TxPacket;                           // encoded OGN packet, to be transmitted
@@ -89,6 +94,11 @@ static int Manchester(uint8_t *Out, const OGN_TxPacket<OGN1_Packet> &TxPacket) /
 
 void setup()                                       // Arduino convention: called once at startup
 {
+  esp_err_t Err = nvs_flash_init();
+  if (Err == ESP_ERR_NVS_NO_FREE_PAGES)
+  { nvs_flash_erase();
+    Err = nvs_flash_init(); }
+
   UniqueID = ESP.getEfuseMac();                    // get unique ID of the CPU/chipset
 
   Serial.begin(115200);                            // start serial console
@@ -129,6 +139,8 @@ static int ReceiveLoop(int ListenTime)             // receive/listen for packets
     delay(1); }
   Radio.standby();                                 // end reception/listen period
   return Count; }                                  // return number of packets received
+
+uint32_t TestData[4] = { 0x01234567, 0x89ABCDEF, 0xFEDCBA98, 0x76543210 } ;
 
 void loop()                                        // 
 {
